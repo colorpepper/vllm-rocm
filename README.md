@@ -15,8 +15,8 @@ Easy, fast, and cheap LLM serving for everyone
 </p>
 
 ---
-## vLLM GPT4V Alpha Branch
-Welcome to the vLLM GPT4V Alpha Branch, a cutting-edge experimental branch designed to enhance support for Vision Language Models (VLMs) and introduce capabilities for image input within the OpenAI Chat Completions API. It has been rigorously tested for compatibility with both AMD and NVIDIA GPUs.
+## vLLM GPT-4V API Alpha Branch
+Welcome to the vLLM GPT-4V API Alpha Branch, a cutting-edge experimental branch designed to enhance support for Vision Language Models (VLMs) and introduce capabilities for image input within the OpenAI Chat Completions API. It has been rigorously tested for compatibility with both AMD and NVIDIA GPUs.
 
 ### Purpose of This Branch
 This branch serves as a testing ground for our team and the broader community to evaluate the current support of VLMs, ensuring they meet all production demands, particularly on AMD GPUs. Your feedback and testing will help us refine and optimize the integration of VLMs.
