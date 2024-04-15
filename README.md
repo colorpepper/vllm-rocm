@@ -14,6 +14,39 @@ Easy, fast, and cheap LLM serving for everyone
 
 </p>
 
+---
+## vLLM GPT4V Alpha Branch
+Welcome to the vLLM GPT4V Alpha Branch, a cutting-edge experimental branch designed to enhance support for Vision Language Models (VLMs) and introduce capabilities for image input within the OpenAI Chat Completions API. It has been rigorously tested for compatibility with both AMD and NVIDIA GPUs.
+
+### Purpose of This Branch
+This branch serves as a testing ground for our team and the broader community to evaluate the current support of VLMs, ensuring they meet all production demands, particularly on AMD GPUs. Your feedback and testing will help us refine and optimize the integration of VLMs.
+
+### Key Features
+- Enhanced VLM Support
+- `AutoImageProcessor` Integration: Utilizes HuggingFace's AutoImageProcessor for image pre-processing, configurable via `config.json`.
+- Pre-built Templates: Includes a ready-to-use chat template for models like `llava-hf/llava-1.5-7b-hf`, simplifying setup.
+- Image Input Support in OpenAI API
+- Model Compatibility: Works with all `LlavaForConditionalGeneration` models, especially `llava-hf/llava-1.5-7b-hf`.
+- Flexible Image Sources: Accepts image data and web URLs.
+- Comprehensive Format Support: Supports PNG, JPEG, WEBP, GIF, BMP, and TIFF formats.
+- Preprocessing: Images are automatically adjusted to the required dimensions and format as per model specifications.
+
+### Documentation
+New VLM Usage Guide: Detailed documentation available under the "Models" section to help you get started with VLMs.
+
+### System Requirements
+Compatible with AMD and NVIDIA GPUs.
+
+### Related Contributions
+This PR directly resolves issues [#2058](https://github.com/vllm-project/vllm/issues/2058) and [#3873](https://github.com/vllm-project/vllm/issues/3873). It also supercedes PR [#3467](https://github.com/vllm-project/vllm/pull/3467).
+PR [#3042](https://github.com/vllm-project/vllm/pull/3042) added vision language model support.
+
+### Upstream Contributions
+
+This fork is actively maintained, and we are committed to upstreaming these enhancements in PR [#3978](https://github.com/vllm-project/vllm/pull/3978). Stay tuned for more updates and enhancements! 
+
+For any issues or contributions, please refer to the issues section or submit a pull request.
+---
 *Latest News* 🔥
 - [2024/04] We hosted [the third vLLM meetup](https://robloxandvllmmeetup2024.splashthat.com/) with Roblox! Please find the meetup slides [here](https://docs.google.com/presentation/d/1A--47JAK4BJ39t954HyTkvtfwn0fkqtsL8NGFuslReM/edit?usp=sharing).
 - [2024/01] We hosted [the second vLLM meetup](https://lu.ma/ygxbpzhl) in SF! Please find the meetup slides [here](https://docs.google.com/presentation/d/12mI2sKABnUw5RBWXDYY-HtHth4iMSNcEoQ10jDQbxgA/edit?usp=sharing).
