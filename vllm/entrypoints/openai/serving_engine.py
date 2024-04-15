@@ -2,9 +2,12 @@ import asyncio
 import json
 from dataclasses import dataclass
 from http import HTTPStatus
-from typing import Dict, List, Optional, Tuple, Union
+from typing import (Dict, Iterable, Iterator, List, Literal, Optional, Tuple,
+                    TypedDict, Union, cast)
 
-from pydantic import conint
+from pydantic import Field
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
+from typing_extensions import Annotated
 
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.entrypoints.openai.protocol import (ChatCompletionRequest,
@@ -19,18 +22,26 @@ from vllm.transformers_utils.tokenizer import get_tokenizer
 logger = init_logger(__name__)
 
 
+class InputString(TypedDict):
+    text: str
+    is_tokens: Literal[False]
+
+
+class InputTokens(TypedDict):
+    text: List[int]
+    is_tokens: Literal[True]
+
+
 @dataclass
-class LoRA:
+class LoRAModulePath:
     name: str
     local_path: str
 
 
 class OpenAIServing:
 
-    def __init__(self,
-                 engine: AsyncLLMEngine,
-                 served_model: str,
-                 lora_modules=Optional[List[LoRA]]):
+    def __init__(self, engine: AsyncLLMEngine, served_model: str,
+                 lora_modules: Optional[List[LoRAModulePath]]):
         self.engine = engine
         self.served_model = served_model
         if lora_modules is None:
@@ -149,51 +160,71 @@ class OpenAIServing:
         })
         return json_str
 
-    async def _check_model(self, request) -> Optional[ErrorResponse]:
+    async def _check_model(
+        self, request: Union[CompletionRequest, ChatCompletionRequest]
+    ) -> Optional[ErrorResponse]:
         if request.model == self.served_model:
-            return
+            return None
         if request.model in [lora.lora_name for lora in self.lora_requests]:
-            return
+            return None
         return self.create_error_response(
             message=f"The model `{request.model}` does not exist.",
             err_type="NotFoundError",
             status_code=HTTPStatus.NOT_FOUND)
 
-    def _maybe_get_lora(self, request) -> Optional[LoRARequest]:
+    def _maybe_get_lora(
+        self, request: Union[CompletionRequest, ChatCompletionRequest]
+    ) -> Optional[LoRARequest]:
         if request.model == self.served_model:
-            return
+            return None
         for lora in self.lora_requests:
             if request.model == lora.lora_name:
                 return lora
         # if _check_model has been called earlier, this will be unreachable
         raise ValueError("The model `{request.model}` does not exist.")
 
-    def _validate_prompt_and_tokenize(
+    def _normalize_prompt_text_to_input(
         self,
         request: Union[ChatCompletionRequest, CompletionRequest],
-        prompt: Optional[str] = None,
-        prompt_ids: Optional[List[int]] = None,
-        truncate_prompt_tokens: Optional[conint(ge=1)] = None
+        prompt: str,
+        tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
+        truncate_prompt_tokens: Optional[Annotated[int, Field(ge=1)]] = None
     ) -> Tuple[List[int], str]:
-        if not (prompt or prompt_ids):
-            raise ValueError("Either prompt or prompt_ids should be provided.")
-        if (prompt and prompt_ids):
-            raise ValueError(
-                "Only one of prompt or prompt_ids should be provided.")
-
-        if prompt_ids is None:
-            tokenizer_kwargs = {} if truncate_prompt_tokens is None else {
-                "truncation": True,
-                "max_length": truncate_prompt_tokens,
-            }
-            input_ids = self.tokenizer(prompt, **tokenizer_kwargs).input_ids
-        elif truncate_prompt_tokens is not None:
-            input_ids = prompt_ids[-truncate_prompt_tokens:]
+        if truncate_prompt_tokens is None:
+            encoded = tokenizer(prompt)
         else:
-            input_ids = prompt_ids
+            encoded = tokenizer(prompt,
+                                truncation=True,
+                                max_length=truncate_prompt_tokens)
 
-        input_text = prompt if prompt is not None else self.tokenizer.decode(
-            prompt_ids)
+        input_ids = encoded.input_ids
+
+        input_text = prompt
+
+        return self._validate_input(request, input_ids, input_text)
+
+    def _normalize_prompt_tokens_to_input(
+        self,
+        request: Union[ChatCompletionRequest, CompletionRequest],
+        prompt_ids: List[int],
+        tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
+        truncate_prompt_tokens: Optional[Annotated[int, Field(ge=1)]] = None
+    ) -> Tuple[List[int], str]:
+        if truncate_prompt_tokens is None:
+            input_ids = prompt_ids
+        else:
+            input_ids = prompt_ids[-truncate_prompt_tokens:]
+
+        input_text = tokenizer.decode(prompt_ids)
+
+        return self._validate_input(request, input_ids, input_text)
+
+    def _validate_input(
+        self,
+        request: Union[ChatCompletionRequest, CompletionRequest],
+        input_ids: List[int],
+        input_text: str,
+    ) -> Tuple[List[int], str]:
         token_num = len(input_ids)
 
         if request.max_tokens is None:
@@ -207,5 +238,118 @@ class OpenAIServing:
                 f"({token_num} in the messages, "
                 f"{request.max_tokens} in the completion). "
                 f"Please reduce the length of the messages or completion.", )
-        else:
-            return input_ids, input_text
+
+        return input_ids, input_text
+
+    def _tokenize_prompt_input(
+        self,
+        request: Union[ChatCompletionRequest, CompletionRequest],
+        prompt_input: Union[str, List[int]],
+        truncate_prompt_tokens: Optional[Annotated[int, Field(ge=1)]] = None,
+    ) -> Tuple[List[int], str]:
+        """A simpler implementation of
+        :meth:`~vllm.entrypoints.openai.serving_engine.OpenAIServing._tokenize_prompt_input_or_inputs`
+        that assumes single input."""
+        return next(
+            self._tokenize_prompt_inputs(
+                request,
+                [prompt_input],
+                truncate_prompt_tokens=truncate_prompt_tokens,
+            ))
+
+    def _tokenize_prompt_inputs(
+        self,
+        request: Union[ChatCompletionRequest, CompletionRequest],
+        prompt_inputs: Iterable[Union[str, List[int]]],
+        truncate_prompt_tokens: Optional[Annotated[int, Field(ge=1)]] = None,
+    ) -> Iterator[Tuple[List[int], str]]:
+        """A simpler implementation of
+        :meth:`~vllm.entrypoints.openai.serving_engine.OpenAIServing._tokenize_prompt_input_or_inputs`
+        that assumes multiple inputs."""
+        tokenizer = self.tokenizer
+        assert tokenizer is not None
+
+        for text in prompt_inputs:
+            if isinstance(text, str):
+                yield self._normalize_prompt_text_to_input(
+                    request,
+                    prompt=text,
+                    tokenizer=tokenizer,
+                    truncate_prompt_tokens=truncate_prompt_tokens,
+                )
+            else:
+                yield self._normalize_prompt_tokens_to_input(
+                    request,
+                    prompt_ids=text,
+                    tokenizer=tokenizer,
+                    truncate_prompt_tokens=truncate_prompt_tokens,
+                )
+
+    def _parse_prompt_input_or_inputs(
+        self,
+        input_or_inputs: Union[str, List[str], List[int], List[List[int]]],
+    ) -> List[Union[InputString, InputTokens]]:
+        if isinstance(input_or_inputs, str):
+            # case 1: a string
+            elem = input_or_inputs
+            return [InputString(text=elem, is_tokens=False)]
+
+        if isinstance(input_or_inputs, list):
+            if len(input_or_inputs) == 0:
+                raise ValueError("please provide at least one prompt")
+            if isinstance(input_or_inputs[0], str):
+                # case 2: array of strings
+                return [
+                    InputString(text=elem, is_tokens=False)
+                    for elem in cast(List[str], input_or_inputs)
+                ]
+            if isinstance(input_or_inputs[0], int):
+                # case 3: array of tokens
+                elem = cast(List[int], input_or_inputs)
+                return [InputTokens(text=elem, is_tokens=True)]
+            if isinstance(input_or_inputs[0], list) and isinstance(
+                    input_or_inputs[0][0], int):
+                # case 4: array of token arrays
+                return [
+                    InputTokens(text=elem, is_tokens=True)
+                    for elem in cast(List[List[int]], input_or_inputs)
+                ]
+
+        raise ValueError("prompt must be a string, array of strings, "
+                         "array of tokens, or array of token arrays")
+
+    def _tokenize_prompt_input_or_inputs(
+        self,
+        request: Union[ChatCompletionRequest, CompletionRequest],
+        input_or_inputs: Union[str, List[str], List[int], List[List[int]]],
+        truncate_prompt_tokens: Optional[Annotated[int, Field(ge=1)]] = None,
+    ) -> Iterator[Tuple[List[int], str]]:
+        """Tokenize/detokenize depending on the input format.
+        
+        According to `OpenAI API <https://platform.openai.com/docs/api-reference/embeddings/create>`_
+        , each input can be a string or array of tokens. Note that each request
+        can pass one or more inputs.
+        """
+        tokenizer = self.tokenizer
+        assert tokenizer is not None
+
+        for prompt_input in self._parse_prompt_input_or_inputs(
+                input_or_inputs):
+            # Although our type checking is based on mypy,
+            # VSCode Pyright extension should still work properly
+            # "is True" is required for Pyright to perform type narrowing
+            # See: https://github.com/microsoft/pyright/issues/7672
+            if prompt_input["is_tokens"] is False:
+                yield self._normalize_prompt_text_to_input(
+                    request,
+                    prompt=prompt_input["text"],
+                    tokenizer=tokenizer,
+                    truncate_prompt_tokens=truncate_prompt_tokens,
+                )
+            else:
+                yield self._normalize_prompt_tokens_to_input(
+                    request,
+                    prompt_ids=prompt_input["text"],
+                    tokenizer=tokenizer,
+                    truncate_prompt_tokens=truncate_prompt_tokens,
+                )

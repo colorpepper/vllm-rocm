@@ -1,10 +1,6 @@
 # imports for guided decoding tests
 import json
-import os
 import re
-import subprocess
-import sys
-import time
 
 import jsonschema
 import openai  # use the official client for correctness check
@@ -12,13 +8,12 @@ import pytest
 # using Ray for overall ease of process management, parallel requests,
 # and debugging.
 import ray
-import requests
 # downloading lora to test lora requests
 from huggingface_hub import snapshot_download
 
+from vllm.entrypoints.openai.test_utils import ServerRunner
 from vllm.transformers_utils.tokenizer import get_tokenizer
 
-MAX_SERVER_START_WAIT_S = 600  # wait for server to start for 60 seconds
 # any model with a chat template should work here
 MODEL_NAME = "HuggingFaceH4/zephyr-7b-beta"
 # technically this needs Mistral-7B-v0.1 as base, but we're not testing
@@ -75,51 +70,12 @@ TEST_CHOICE = [
 pytestmark = pytest.mark.asyncio
 
 
-@ray.remote(num_gpus=1)
-class ServerRunner:
-
-    def __init__(self, args):
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
-        self.proc = subprocess.Popen(
-            ["python3", "-m", "vllm.entrypoints.openai.api_server"] + args,
-            env=env,
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-        )
-        self._wait_for_server()
-
-    def ready(self):
-        return True
-
-    def _wait_for_server(self):
-        # run health check
-        start = time.time()
-        while True:
-            try:
-                if requests.get(
-                        "http://localhost:8000/health").status_code == 200:
-                    break
-            except Exception as err:
-                if self.proc.poll() is not None:
-                    raise RuntimeError("Server exited unexpectedly.") from err
-
-                time.sleep(0.5)
-                if time.time() - start > MAX_SERVER_START_WAIT_S:
-                    raise RuntimeError(
-                        "Server failed to start in time.") from err
-
-    def __del__(self):
-        if hasattr(self, "proc"):
-            self.proc.terminate()
-
-
 @pytest.fixture(scope="session")
 def zephyr_lora_files():
     return snapshot_download(repo_id=LORA_NAME)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def server(zephyr_lora_files):
     ray.init()
     server_runner = ServerRunner.remote([
@@ -413,50 +369,52 @@ async def test_chat_streaming(server, client: openai.AsyncOpenAI,
 )
 async def test_batch_completions(server, client: openai.AsyncOpenAI,
                                  model_name: str):
-    # test simple list
-    batch = await client.completions.create(
-        model=model_name,
-        prompt=["Hello, my name is", "Hello, my name is"],
-        max_tokens=5,
-        temperature=0.0,
-    )
-    assert len(batch.choices) == 2
-    assert batch.choices[0].text == batch.choices[1].text
+    # test using text and token IDs
+    for prompts in (["Hello, my name is"] * 2, [[0, 0, 0, 0, 0]] * 2):
+        # test simple list
+        batch = await client.completions.create(
+            model=model_name,
+            prompt=prompts,
+            max_tokens=5,
+            temperature=0.0,
+        )
+        assert len(batch.choices) == 2
+        assert batch.choices[0].text == batch.choices[1].text
 
-    # test n = 2
-    batch = await client.completions.create(
-        model=model_name,
-        prompt=["Hello, my name is", "Hello, my name is"],
-        n=2,
-        max_tokens=5,
-        temperature=0.0,
-        extra_body=dict(
-            # NOTE: this has to be true for n > 1 in vLLM, but not necessary
-            # for official client.
-            use_beam_search=True),
-    )
-    assert len(batch.choices) == 4
-    assert batch.choices[0].text != batch.choices[
-        1].text, "beam search should be different"
-    assert batch.choices[0].text == batch.choices[
-        2].text, "two copies of the same prompt should be the same"
-    assert batch.choices[1].text == batch.choices[
-        3].text, "two copies of the same prompt should be the same"
+        # test n = 2
+        batch = await client.completions.create(
+            model=model_name,
+            prompt=prompts,
+            n=2,
+            max_tokens=5,
+            temperature=0.0,
+            extra_body=dict(
+                # NOTE: this has to be true for n > 1 in vLLM, but not necessary
+                # for official client.
+                use_beam_search=True),
+        )
+        assert len(batch.choices) == 4
+        assert batch.choices[0].text != batch.choices[
+            1].text, "beam search should be different"
+        assert batch.choices[0].text == batch.choices[
+            2].text, "two copies of the same prompt should be the same"
+        assert batch.choices[1].text == batch.choices[
+            3].text, "two copies of the same prompt should be the same"
 
-    # test streaming
-    batch = await client.completions.create(
-        model=model_name,
-        prompt=["Hello, my name is", "Hello, my name is"],
-        max_tokens=5,
-        temperature=0.0,
-        stream=True,
-    )
-    texts = [""] * 2
-    async for chunk in batch:
-        assert len(chunk.choices) == 1
-        choice = chunk.choices[0]
-        texts[choice.index] += choice.text
-    assert texts[0] == texts[1]
+        # test streaming
+        batch = await client.completions.create(
+            model=model_name,
+            prompt=prompts,
+            max_tokens=5,
+            temperature=0.0,
+            stream=True,
+        )
+        texts = [""] * 2
+        async for chunk in batch:
+            assert len(chunk.choices) == 1
+            choice = chunk.choices[0]
+            texts[choice.index] += choice.text
+        assert texts[0] == texts[1]
 
 
 async def test_logits_bias(server, client: openai.AsyncOpenAI):
@@ -762,7 +720,7 @@ async def test_echo_logprob_completion(server, client: openai.AsyncOpenAI,
         prompt_text = tokenizer.decode(prompt) if isinstance(prompt,
                                                              list) else prompt
         assert (completion.choices[0].text is not None
-                and re.search(r"^" + prompt_text, completion.choices[0].text))
+                and completion.choices[0].text.startswith(prompt_text))
         logprobs = completion.choices[0].logprobs
         assert logprobs is not None
         assert len(logprobs.text_offset) > 5

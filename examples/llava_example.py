@@ -17,6 +17,7 @@ def run_llava_pixel_values():
         image_token_id=32000,
         image_input_shape="1,3,336,336",
         image_feature_size=576,
+        no_image_processor=True,
     )
 
     prompt = "<image>" * 576 + (
@@ -26,7 +27,7 @@ def run_llava_pixel_values():
     images = torch.load("images/stop_sign_pixel_values.pt")
 
     outputs = llm.generate(prompt,
-                           multi_modal_data=MultiModalData(
+                           multi_modal_datas=MultiModalData(
                                type=MultiModalData.Type.IMAGE, data=images))
     for o in outputs:
         generated_text = o.outputs[0].text
@@ -40,6 +41,7 @@ def run_llava_image_features():
         image_token_id=32000,
         image_input_shape="1,576,1024",
         image_feature_size=576,
+        no_image_processor=True,
     )
 
     prompt = "<image>" * 576 + (
@@ -49,7 +51,7 @@ def run_llava_image_features():
     images = torch.load("images/stop_sign_image_features.pt")
 
     outputs = llm.generate(prompt,
-                           multi_modal_data=MultiModalData(
+                           multi_modal_datas=MultiModalData(
                                type=MultiModalData.Type.IMAGE, data=images))
     for o in outputs:
         generated_text = o.outputs[0].text
